@@ -5,7 +5,7 @@ import re
 import sys
 import time
 import numpy as np
-from datasets import load_dataset
+from datasets import Image, load_dataset
 from lxml import html as lxml_html
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -150,8 +150,12 @@ def evaluate_split(
 ) -> dict:
     print(f"\nStreaming {dataset_name} split='{split_name}'...")
     ds = load_dataset(dataset_name, split=split_name, streaming=True)
-    # Drop heavy image column if present so streaming stays fast and lightweight
-    if getattr(ds, "column_names", None) and "screenshot" in ds.column_names:
+    # Disable image decoding on screenshot before removing it so Pillow is never required
+    features = getattr(ds, "features", None) or {}
+    if "screenshot" in features:
+        ds = ds.cast_column("screenshot", Image(decode=False))
+        ds = ds.remove_columns(["screenshot"])
+    elif getattr(ds, "column_names", None) and "screenshot" in ds.column_names:
         ds = ds.remove_columns(["screenshot"])
 
     total_actions = 0
