@@ -1,6 +1,14 @@
-# Folate
+<p align="center">
+  <img src="banner.png" alt="Folate" width="100%">
+</p>
 
-**Hugging Face**: [figranium/folate](https://huggingface.co/figranium/folate) | **GitHub**: [figranium/folate](https://github.com/figranium/folate) | **License**: Apache 2.0
+<p align="center">
+  <a href="https://huggingface.co/figranium/folate"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-sm.svg" alt="Model on Hugging Face"></a>
+  &nbsp;&bull;&nbsp;
+  <a href="https://github.com/figranium/folate"><strong>GitHub</strong></a>
+  &nbsp;&bull;&nbsp;
+  <a href="LICENSE"><strong>Apache 2.0 License</strong></a>
+</p>
 
 Folate is a lightweight, CPU-efficient neural DOM element ranker built for browser automation within tight memory constraints (<2 GB total footprint alongside a headless browser). Fine-tuned from [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web) and dynamically quantized to **INT8 ONNX (~107 MB)**, Folate runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
 
