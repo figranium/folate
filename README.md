@@ -95,8 +95,10 @@ folate/
 ├── scripts/
 │   ├── prepare_data.py            # Streaming Mind2Web serializer (lxml)
 │   ├── train.py                   # Fine-tuning script (bf16/fp16/CPU)
-│   └── export_onnx.py             # FP32 ONNX export + INT8 dynamic quantization
+│   ├── export_onnx.py             # FP32 ONNX export + INT8 dynamic quantization
+│   └── eval_mind2web.py           # Official Mind2Web test split evaluator (Top-1/3/5 & MRR)
 ├── examples/
+│   ├── live_test_suite.py         # 10-site, 31-step live Playwright benchmark suite
 │   ├── benchmark.py               # Latency, RSS memory, and top-k sanity benchmark
 │   ├── test_google.py             # Live Playwright search box grounding on google.com
 │   ├── test_amazon.py             # E-commerce element ranking on amazon.com (+ offline snapshot)
@@ -115,6 +117,7 @@ folate/
 Run any of the included benchmarks or live browser tests from the repository root:
 
 ```bash
+python examples/live_test_suite.py
 python examples/benchmark.py
 python examples/test_multistep_checkout.py
 python examples/test_google.py
@@ -124,9 +127,9 @@ python examples/test_github.py
 
 ---
 
-## Training & Quantization Pipeline
+## Training & Evaluation Pipeline
 
-To reproduce data preparation, fine-tuning, and INT8 ONNX export from scratch on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web):
+To reproduce data preparation, fine-tuning, INT8 ONNX export, and evaluation on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web):
 
 ```bash
 python -m pip install -r requirements-train.txt
@@ -139,6 +142,9 @@ python scripts/train.py --data-dir ./data --save-dir ./folate-base
 
 # 3. Export to FP32 ONNX and quantize to INT8 (~107 MB)
 python scripts/export_onnx.py --model-dir ./folate-base --output-dir ./folate-int8
+
+# 4. Evaluate on official Mind2Web test splits (test_task, test_website, test_domain)
+python scripts/eval_mind2web.py --json-out mind2web_results.json
 ```
 
 ---
