@@ -28,6 +28,20 @@ TEST_SPLITS = ("test_task", "test_website", "test_domain")
 DEFAULT_DATASET = "osunlp/Multimodal-Mind2Web"
 
 
+def parse_candidate_list(raw_cands) -> list[dict]:
+    if not raw_cands:
+        return []
+    if isinstance(raw_cands, str):
+        raw_cands = json.loads(raw_cands)
+    parsed = []
+    for item in raw_cands:
+        if isinstance(item, str):
+            item = json.loads(item)
+        if isinstance(item, dict):
+            parsed.append(item)
+    return parsed
+
+
 def clean_query(action_repr: str) -> str:
     desc = action_repr.split("->")[0].strip()
     desc = re.sub(r"[\[\]]", " ", desc)
@@ -112,8 +126,8 @@ def iter_action_records(row: dict):
             yield {
                 "action_repr": action_reprs[i],
                 "cleaned_html": act.get("cleaned_html", ""),
-                "pos_candidates": act.get("pos_candidates") or [],
-                "neg_candidates": act.get("neg_candidates") or [],
+                "pos_candidates": parse_candidate_list(act.get("pos_candidates")),
+                "neg_candidates": parse_candidate_list(act.get("neg_candidates")),
             }
         return
 
@@ -135,8 +149,8 @@ def iter_action_records(row: dict):
     yield {
         "action_repr": action_repr,
         "cleaned_html": row.get("cleaned_html", ""),
-        "pos_candidates": row.get("pos_candidates") or [],
-        "neg_candidates": row.get("neg_candidates") or [],
+        "pos_candidates": parse_candidate_list(row.get("pos_candidates")),
+        "neg_candidates": parse_candidate_list(row.get("neg_candidates")),
     }
 
 
