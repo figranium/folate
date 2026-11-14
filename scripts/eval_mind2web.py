@@ -155,8 +155,6 @@ def evaluate_split(
                 )
 
             if max_candidates and len(pool) > max_candidates:
-                # Keep all positives plus the first (max_candidates - len(pos)) negatives
-                # matching MindAct's 50-candidate evaluation protocol
                 positives = [c for c in pool if c["is_pos"]]
                 negatives = [c for c in pool if not c["is_pos"]]
                 pool = positives + negatives[: max(0, max_candidates - len(positives))]
@@ -209,6 +207,41 @@ def evaluate_split(
     }
 
 
+def build_hf_model_index(model_id: str, results: list[dict], max_candidates: int) -> str:
+    lines = [
+        "model-index:",
+        f"- name: {model_id}",
+        "  results:",
+    ]
+    for r in results:
+        split_label = r["split"].replace("_", " ").title()
+        lines.extend(
+            [
+                "  - task:",
+                "      type: text-classification",
+                "      name: DOM Element Grounding",
+                "    dataset:",
+                "      type: osunlp/Mind2Web",
+                f"      name: Mind2Web ({split_label})",
+                f"      split: {r['split']}",
+                "    metrics:",
+                "    - type: accuracy",
+                f"      value: {r['top1_acc']}",
+                f"      name: Top-1 Accuracy ({max_candidates} cands)",
+                "    - type: recall",
+                f"      value: {r['top3_acc']}",
+                f"      name: Top-3 Recall ({max_candidates} cands)",
+                "    - type: recall",
+                f"      value: {r['top5_acc']}",
+                f"      name: Top-5 Recall ({max_candidates} cands)",
+                "    - type: mrr",
+                f"      value: {r['mrr']}",
+                f"      name: Mean Reciprocal Rank ({max_candidates} cands)",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Folate on official Mind2Web test splits.")
     parser.add_argument(
@@ -232,7 +265,13 @@ def main():
     )
     parser.add_argument("--batch-size", type=int, default=16, help="ONNX mini-batch size")
     parser.add_argument("--model-dir", default=None, help="Optional local model directory override")
+    parser.add_argument("--model-id", default="figranium/folate", help="Hugging Face model ID for model-index YAML")
     parser.add_argument("--json-out", default=None, help="Optional path to write JSON evaluation metrics")
+    parser.add_argument(
+        "--hf-yaml-out",
+        default=None,
+        help="Optional path to write Hugging Face model-index YAML snippet for README.md metadata",
+    )
     args = parser.parse_args()
 
     finder = FolateSelectorFinder(model_dir=args.model_dir)
@@ -259,10 +298,21 @@ def main():
             f"{r['mrr']:>6.4f} | {r['avg_ms_per_step']:>6.1f} ms"
         )
 
+    hf_yaml = build_hf_model_index(args.model_id, results, args.max_candidates)
+    print(f"\n{'=' * 82}")
+    print("HUGGING FACE MODEL CARD METADATA (model-index YAML)")
+    print(f"{'=' * 82}")
+    print(hf_yaml)
+
+    if args.hf_yaml_out:
+        with open(args.hf_yaml_out, "w", encoding="utf-8") as f:
+            f.write(hf_yaml)
+        print(f"Saved Hugging Face model-index YAML to {args.hf_yaml_out}")
+
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump({"max_candidates": args.max_candidates, "results": results}, f, indent=2)
-        print(f"\nSaved evaluation report to {args.json_out}")
+        print(f"Saved evaluation report to {args.json_out}")
 
 
 if __name__ == "__main__":
