@@ -7,35 +7,42 @@ Runnable examples and live browser tests demonstrating how to use `FolateSelecto
 Install runtime dependencies and Playwright (for live browser tests):
 
 ```bash
-pip install -r ../requirements.txt
-pip install playwright
-playwright install chromium
+python -m pip install -r ../requirements.txt
+python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 ## Included Scripts
 
 | Script | Description |
 | :--- | :--- |
+| `live_test_suite.py` | **Complete 10-site, 31-step live Playwright benchmark suite** covering Google, Amazon, GitHub, Wikipedia, Hacker News, DuckDuckGo, Python.org, MDN Web Docs, Quotes to Scrape (multi-step login + pagination), and Books to Scrape—reporting Top-1 accuracy, Top-K recall, per-step CPU latency, RSS RAM, and optional JSON output. |
 | `benchmark.py` | Measures model load time, CPU inference latency, process RSS memory, and top-k ranking on a sample travel booking DOM. |
 | `test_google.py` | Opens `google.com` in Playwright, finds the search box (`textarea[name="q"]`), types a query, and submits it. |
 | `test_amazon.py` | Tests e-commerce element grounding on `amazon.com` (search bar, search submit button, cart link, and department navigation) with offline HTML fallback. |
 | `test_github.py` | Navigates to `github.com/figranium/folate` in Playwright and locates repository actions (code/clone menu, issues tab, pull requests tab, and repository search). |
 | `test_multistep_checkout.py` | Offline multi-step e-commerce form & checkout flow benchmark (size selection, add to cart, shipping address fields, promo code, and place order). |
 
-## Running
+## Running the Complete Live Test Suite
 
-Run any script from the repository root:
+Run all 10 live site suites end-to-end:
+
+```bash
+python examples/live_test_suite.py
+```
+
+Run headless, target specific sites, or export a JSON report:
+
+```bash
+python examples/live_test_suite.py --headless --sites google github wikipedia hackernews --json-out live_results.json
+```
+
+## Running Individual Scripts
 
 ```bash
 python examples/benchmark.py
-python examples/test_google.py
-python examples/test_amazon.py
-python examples/test_github.py
 python examples/test_multistep_checkout.py
-```
-
-By default, live browser examples launch Chromium in headed mode (`headless=False`) so you can visually watch Folate select and interact with elements. Pass `--headless` to run without a visible browser window:
-
-```bash
-python examples/test_google.py --headless
+python examples/test_google.py
+python examples/test_amazon.py --offline
+python examples/test_github.py
 ```
