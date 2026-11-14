@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Datasets & Checkpoints
+data/
+*.jsonl
+folate-checkpoints/
+folate-base/
+folate-onnx/
+folate-int8/
+*.onnx
+*.safetensors
+*.bin
+
+# OS & Editors
+.DS_Store
+.vscode/
+.idea/
