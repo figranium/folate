@@ -2,10 +2,11 @@
 
 Lightweight, CPU-efficient neural DOM element ranker built for browser automation within tight memory constraints (<2 GB total footprint alongside a headless browser).
 
-Folate fine-tunes [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) as a cross-encoder ranker on `osunlp/Mind2Web` and exports to an **INT8-quantized ONNX model (~107 MB)** that runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
+Folate fine-tunes [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) as a cross-encoder ranker on `osunlp/Mind2Web` and exports to an **INT8-quantized ONNX model (~107 MB)** hosted at [`figranium/folate`](https://huggingface.co/figranium/folate). It runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
 
 ## Architecture & Footprint
 
+- **Model Weights:** [`huggingface.co/figranium/folate`](https://huggingface.co/figranium/folate) (`model_quantized.onnx`)
 - **Backbone:** `google/electra-base-discriminator` (cross-encoder, single logit output)
 - **Max Sequence Length:** `96` tokens
 - **Serialized Element Schema:** `[TAG] ... [ID/NAME/ROLE/ARIA-LABEL/PLACEHOLDER/HREF/DATA-TESTID] ... [TEXT] ... [PARENT] ...`
@@ -39,20 +40,23 @@ folate/
    pip install -r requirements.txt
    ```
 
-2. **Place your quantized model artifacts** (`model_quantized.onnx`, `tokenizer.json`, `vocab.txt`, `tokenizer_config.json`, `special_tokens_map.json`) inside `./folate-int8/`.
-
-3. **Find DOM elements with natural language:**
+2. **Find DOM elements with natural language** (automatically downloads and caches [`figranium/folate`](https://huggingface.co/figranium/folate) from Hugging Face on first run, or loads `./folate-int8` if present):
    ```python
    from folate import FolateSelectorFinder
 
-   finder = FolateSelectorFinder(model_dir="./folate-int8")
+   finder = FolateSelectorFinder()  # defaults to repo_id="figranium/folate"
    matches = finder.rank("click Search Flights button", html_source, top_k=3)
 
    for match in matches:
        print(f"{match['score']:.4f} | {match['selector']} | {match['element']}")
    ```
 
-4. **Run the local benchmark:**
+   To load from a local directory instead:
+   ```python
+   finder = FolateSelectorFinder(model_dir="./folate-int8")
+   ```
+
+3. **Run the local benchmark:**
    ```bash
    python examples/benchmark.py
    ```

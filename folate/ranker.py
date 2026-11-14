@@ -2,8 +2,11 @@ import os
 import re
 import numpy as np
 import onnxruntime as ort
+from huggingface_hub import hf_hub_download
 from lxml import html as lxml_html
 from tokenizers import Tokenizer
+
+DEFAULT_REPO_ID = "figranium/folate"
 
 KEEP_ATTRS = [
     "id",
@@ -28,13 +31,34 @@ INTERACTIVE_XPATH = (
 class FolateSelectorFinder:
     """Lightweight CPU cross-encoder ranker for webpage DOM elements."""
 
-    def __init__(self, model_dir: str = "./folate-int8", num_threads: int = 4):
+    def __init__(
+        self,
+        model_dir: str | None = None,
+        repo_id: str = DEFAULT_REPO_ID,
+        revision: str | None = None,
+        num_threads: int = 4,
+    ):
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = num_threads
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        model_path = os.path.join(model_dir, "model_quantized.onnx")
-        tokenizer_path = os.path.join(model_dir, "tokenizer.json")
+        if model_dir is not None and os.path.isdir(model_dir):
+            model_path = os.path.join(model_dir, "model_quantized.onnx")
+            tokenizer_path = os.path.join(model_dir, "tokenizer.json")
+        elif os.path.isdir("./folate-int8"):
+            model_path = os.path.join("./folate-int8", "model_quantized.onnx")
+            tokenizer_path = os.path.join("./folate-int8", "tokenizer.json")
+        else:
+            model_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="model_quantized.onnx",
+                revision=revision,
+            )
+            tokenizer_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="tokenizer.json",
+                revision=revision,
+            )
 
         self.session = ort.InferenceSession(
             model_path,

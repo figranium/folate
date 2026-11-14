@@ -23,11 +23,12 @@ SAMPLE_HTML = """
 
 
 def main():
-    model_dir = os.environ.get("FOLATE_MODEL_DIR", "./folate-int8")
+    model_dir = os.environ.get("FOLATE_MODEL_DIR")
+    repo_id = os.environ.get("FOLATE_REPO_ID", "figranium/folate")
     proc = psutil.Process(os.getpid())
 
     t0 = time.perf_counter()
-    finder = FolateSelectorFinder(model_dir=model_dir)
+    finder = FolateSelectorFinder(model_dir=model_dir, repo_id=repo_id)
     load_ms = (time.perf_counter() - t0) * 1000
 
     t1 = time.perf_counter()
