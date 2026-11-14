@@ -27,6 +27,12 @@ INTERACTIVE_XPATH = (
     "//*[@onclick or @tabindex]"
 )
 
+STOP_WORDS = {
+    "a", "an", "the", "to", "in", "on", "at", "for", "of", "with", "by",
+    "click", "type", "enter", "fill", "select", "open", "press", "tap",
+    "button", "link", "tab", "box", "field", "input", "dropdown", "icon",
+}
+
 
 class FolateSelectorFinder:
     """Lightweight CPU cross-encoder ranker for webpage DOM elements."""
@@ -130,27 +136,65 @@ class FolateSelectorFinder:
             )
         return candidates
 
-    def rank(self, query: str, page_html: str, top_k: int = 3) -> list[dict]:
+    @staticmethod
+    def _prefilter_candidates(
+        query: str, candidates: list[dict], max_candidates: int
+    ) -> list[dict]:
+        if len(candidates) <= max_candidates:
+            return candidates
+
+        terms = [
+            t for t in re.findall(r"[a-z0-9]+", query.lower()) if t not in STOP_WORDS
+        ]
+        if not terms:
+            return candidates[:max_candidates]
+
+        scored = []
+        for idx, cand in enumerate(candidates):
+            haystack = cand["serialized"].lower()
+            hits = sum(1 for t in terms if t in haystack)
+            scored.append((hits, -idx, cand))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in scored[:max_candidates]]
+
+    def rank(
+        self,
+        query: str,
+        page_html: str,
+        top_k: int = 3,
+        max_candidates: int = 48,
+        batch_size: int = 16,
+    ) -> list[dict]:
         candidates = self.extract_candidates(page_html)
         if not candidates:
             return []
 
+        candidates = self._prefilter_candidates(query, candidates, max_candidates)
         pairs = [(query, c["serialized"]) for c in candidates]
-        encodings = self.tokenizer.encode_batch(pairs)
+        all_logits = []
 
-        input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
-        attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
-        token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64)
+        for start in range(0, len(pairs), batch_size):
+            chunk = pairs[start : start + batch_size]
+            encodings = self.tokenizer.encode_batch(chunk)
 
-        logits = self.session.run(
-            ["logits"],
-            {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "token_type_ids": token_type_ids,
-            },
-        )[0].reshape(-1)
+            input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
+            attention_mask = np.array(
+                [e.attention_mask for e in encodings], dtype=np.int64
+            )
+            token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64)
 
+            logits = self.session.run(
+                ["logits"],
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "token_type_ids": token_type_ids,
+                },
+            )[0].reshape(-1)
+            all_logits.append(logits)
+
+        logits = np.concatenate(all_logits, axis=0)
         probs = 1.0 / (1.0 + np.exp(-logits))
         ranked_indices = np.argsort(-probs)[:top_k]
 
