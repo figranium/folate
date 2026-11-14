@@ -1,9 +1,13 @@
 <p align="center">
-  <img src="banner.png" alt="Folate" width="100%">
+  <img src="banner.png" alt="Folate" width="100%" style="max-height: 220px; object-fit: cover;">
 </p>
 
 <p align="center">
-  <a href="https://huggingface.co/figranium/folate"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-sm.svg" alt="Model on Hugging Face"></a>
+  <a href="https://huggingface.co/figranium/folate"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-lg.svg" alt="Model on Hugging Face"></a>
+</p>
+
+<p align="center">
+  <a href="https://huggingface.co/figranium/folate"><strong>Hugging Face</strong></a>
   &nbsp;&bull;&nbsp;
   <a href="https://github.com/figranium/folate"><strong>GitHub</strong></a>
   &nbsp;&bull;&nbsp;
