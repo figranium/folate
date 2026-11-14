@@ -25,6 +25,7 @@ KEEP_ATTRS = [
 ]
 
 TEST_SPLITS = ("test_task", "test_website", "test_domain")
+DEFAULT_DATASET = "osunlp/Multimodal-Mind2Web"
 
 
 def clean_query(action_repr: str) -> str:
@@ -100,15 +101,58 @@ def score_candidates(
     return np.concatenate(all_logits, axis=0)
 
 
+def iter_action_records(row: dict):
+    """Yield normalized action dicts from either flat (Multimodal-Mind2Web) or nested (Mind2Web) rows."""
+    if "actions" in row and isinstance(row["actions"], list):
+        actions = row.get("actions") or []
+        action_reprs = row.get("action_reprs") or []
+        for i, act in enumerate(actions):
+            if i >= len(action_reprs):
+                continue
+            yield {
+                "action_repr": action_reprs[i],
+                "cleaned_html": act.get("cleaned_html", ""),
+                "pos_candidates": act.get("pos_candidates") or [],
+                "neg_candidates": act.get("neg_candidates") or [],
+            }
+        return
+
+    # Flat per-action schema (osunlp/Multimodal-Mind2Web)
+    action_repr = row.get("target_action_reprs")
+    if not action_repr:
+        action_reprs = row.get("action_reprs") or []
+        raw_idx = row.get("target_action_index")
+        if raw_idx is not None:
+            try:
+                idx = int(raw_idx)
+                if 0 <= idx < len(action_reprs):
+                    action_repr = action_reprs[idx]
+            except (TypeError, ValueError):
+                pass
+    if not action_repr:
+        return
+
+    yield {
+        "action_repr": action_repr,
+        "cleaned_html": row.get("cleaned_html", ""),
+        "pos_candidates": row.get("pos_candidates") or [],
+        "neg_candidates": row.get("neg_candidates") or [],
+    }
+
+
 def evaluate_split(
     finder: FolateSelectorFinder,
+    dataset_name: str,
     split_name: str,
     max_actions: int | None = None,
     max_candidates: int = 50,
     batch_size: int = 16,
 ) -> dict:
-    print(f"\nStreaming osunlp/Mind2Web split='{split_name}'...")
-    ds = load_dataset("osunlp/Mind2Web", split=split_name, streaming=True)
+    print(f"\nStreaming {dataset_name} split='{split_name}'...")
+    ds = load_dataset(dataset_name, split=split_name, streaming=True)
+    # Drop heavy image column if present so streaming stays fast and lightweight
+    if getattr(ds, "column_names", None) and "screenshot" in ds.column_names:
+        ds = ds.remove_columns(["screenshot"])
 
     total_actions = 0
     top1_hits = 0
@@ -118,24 +162,21 @@ def evaluate_split(
     total_ms = 0.0
     total_cands_evaluated = 0
 
-    for task in ds:
-        actions = task.get("actions") or []
-        action_reprs = task.get("action_reprs") or []
-
-        for i, act in enumerate(actions):
+    for row in ds:
+        for act in iter_action_records(row):
             if max_actions is not None and total_actions >= max_actions:
                 break
 
-            pos_cands = act.get("pos_candidates") or []
-            neg_cands = act.get("neg_candidates") or []
-            if not pos_cands or i >= len(action_reprs):
+            pos_cands = act["pos_candidates"]
+            neg_cands = act["neg_candidates"]
+            if not pos_cands:
                 continue
 
-            query = clean_query(action_reprs[i])
+            query = clean_query(act["action_repr"])
             if len(query) < 3:
                 continue
 
-            lookup = build_node_lookup(act.get("cleaned_html", ""))
+            lookup = build_node_lookup(act["cleaned_html"])
             pos_ids = {str(p.get("backend_node_id", "")) for p in pos_cands}
 
             pool = []
@@ -207,7 +248,7 @@ def evaluate_split(
     }
 
 
-def build_hf_model_index(model_id: str, results: list[dict], max_candidates: int) -> str:
+def build_hf_model_index(model_id: str, dataset_name: str, results: list[dict], max_candidates: int) -> str:
     lines = [
         "model-index:",
         f"- name: {model_id}",
@@ -221,7 +262,7 @@ def build_hf_model_index(model_id: str, results: list[dict], max_candidates: int
                 "      type: text-classification",
                 "      name: DOM Element Grounding",
                 "    dataset:",
-                "      type: osunlp/Mind2Web",
+                f"      type: {dataset_name}",
                 f"      name: Mind2Web ({split_label})",
                 f"      split: {r['split']}",
                 "    metrics:",
@@ -244,6 +285,11 @@ def build_hf_model_index(model_id: str, results: list[dict], max_candidates: int
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Folate on official Mind2Web test splits.")
+    parser.add_argument(
+        "--dataset",
+        default=DEFAULT_DATASET,
+        help="Hugging Face dataset containing Mind2Web test splits (default: osunlp/Multimodal-Mind2Web)",
+    )
     parser.add_argument(
         "--splits",
         nargs="+",
@@ -278,6 +324,7 @@ def main():
     results = [
         evaluate_split(
             finder=finder,
+            dataset_name=args.dataset,
             split_name=split,
             max_actions=args.max_actions,
             max_candidates=args.max_candidates,
@@ -298,7 +345,7 @@ def main():
             f"{r['mrr']:>6.4f} | {r['avg_ms_per_step']:>6.1f} ms"
         )
 
-    hf_yaml = build_hf_model_index(args.model_id, results, args.max_candidates)
+    hf_yaml = build_hf_model_index(args.model_id, args.dataset, results, args.max_candidates)
     print(f"\n{'=' * 82}")
     print("HUGGING FACE MODEL CARD METADATA (model-index YAML)")
     print(f"{'=' * 82}")
@@ -311,7 +358,7 @@ def main():
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump({"max_candidates": args.max_candidates, "results": results}, f, indent=2)
+            json.dump({"dataset": args.dataset, "max_candidates": args.max_candidates, "results": results}, f, indent=2)
         print(f"Saved evaluation report to {args.json_out}")
 
 
