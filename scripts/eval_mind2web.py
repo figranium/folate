@@ -117,6 +117,47 @@ def score_candidates(
     return np.concatenate(all_logits, axis=0)
 
 
+def score_batch_groups(
+    finder: FolateSelectorFinder,
+    pending_steps: list[dict],
+    batch_size: int = 128,
+) -> list[np.ndarray]:
+    """Flatten candidate pairs across multiple steps into large ONNX mini-batches for high throughput."""
+    flat_pairs = []
+    offsets = []
+    cursor = 0
+    for step in pending_steps:
+        pairs = [(step["query"], c["serialized"]) for c in step["pool"]]
+        flat_pairs.extend(pairs)
+        offsets.append((cursor, cursor + len(pairs)))
+        cursor += len(pairs)
+
+    if not flat_pairs:
+        return []
+
+    all_logits = []
+    for start in range(0, len(flat_pairs), batch_size):
+        chunk = flat_pairs[start : start + batch_size]
+        encodings = finder.tokenizer.encode_batch(chunk)
+
+        input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
+        attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
+        token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64)
+
+        logits = finder.session.run(
+            ["logits"],
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "token_type_ids": token_type_ids,
+            },
+        )[0].reshape(-1)
+        all_logits.append(logits)
+
+    concatenated = np.concatenate(all_logits, axis=0)
+    return [concatenated[s:e] for s, e in offsets]
+
+
 def iter_action_records(row: dict):
     """Yield normalized action dicts from either flat (Multimodal-Mind2Web) or nested (Mind2Web) rows."""
     if "actions" in row and isinstance(row["actions"], list):
@@ -162,7 +203,8 @@ def evaluate_split(
     split_name: str,
     max_actions: int | None = None,
     max_candidates: int = 50,
-    batch_size: int = 32,
+    batch_size: int = 128,
+    step_chunk_size: int = 16,
     thresholds: list[float] | None = None,
     confidence_threshold: float = 0.5,
 ) -> dict:
@@ -185,57 +227,31 @@ def evaluate_split(
     total_ms = 0.0
     total_cands_evaluated = 0
 
-    # Per-threshold precision / recall / F1 counters (Top-1 selective prediction on calibrated [0, 1] score)
     sweep_counts = {
         t: {"tp": 0, "fp": 0, "abstained": 0} for t in thresholds
     }
-    # Candidate-level binary classification counters at confidence_threshold (all candidates in pool)
     cand_tp = 0
     cand_fp = 0
     cand_fn = 0
 
-    for row in ds:
-        for act in iter_action_records(row):
-            if max_actions is not None and total_actions >= max_actions:
-                break
+    # Cache DOM text/parent lookup per unique cleaned_html hash (consecutive steps often share pages)
+    last_html_key = None
+    last_lookup = {}
+    pending_steps = []
+    queued_actions = 0
 
-            pos_cands = act["pos_candidates"]
-            neg_cands = act["neg_candidates"]
-            if not pos_cands:
-                continue
+    def flush_pending():
+        nonlocal total_actions, top1_hits, top3_hits, top5_hits, mrr_sum, total_ms, total_cands_evaluated, cand_tp, cand_fp, cand_fn
+        if not pending_steps:
+            return
 
-            query = clean_query(act["action_repr"])
-            if len(query) < 3:
-                continue
+        t0 = time.perf_counter()
+        step_logits_list = score_batch_groups(finder, pending_steps, batch_size=batch_size)
+        batch_ms = (time.perf_counter() - t0) * 1000
+        per_step_ms = batch_ms / len(pending_steps)
 
-            lookup = build_node_lookup(act["cleaned_html"])
-            pos_ids = {str(p.get("backend_node_id", "")) for p in pos_cands}
-
-            pool = []
-            seen_ids = set()
-            for cand in pos_cands + neg_cands:
-                nid = str(cand.get("backend_node_id", ""))
-                if nid and nid in seen_ids:
-                    continue
-                if nid:
-                    seen_ids.add(nid)
-                pool.append(
-                    {
-                        "node_id": nid,
-                        "is_pos": nid in pos_ids,
-                        "serialized": serialize_candidate(cand, lookup),
-                    }
-                )
-
-            if max_candidates and len(pool) > max_candidates:
-                positives = [c for c in pool if c["is_pos"]]
-                negatives = [c for c in pool if not c["is_pos"]]
-                pool = positives + negatives[: max(0, max_candidates - len(positives))]
-
-            t0 = time.perf_counter()
-            logits = score_candidates(finder, query, pool, batch_size=batch_size)
-            infer_ms = (time.perf_counter() - t0) * 1000
-            # Model is trained with MSE regression on [0.0, 1.0] labels, so logits are direct [0, 1] confidence scores
+        for step, logits in zip(pending_steps, step_logits_list):
+            pool = step["pool"]
             probs = np.clip(logits, 0.0, 1.0)
 
             ranked_idx = np.argsort(-logits)
@@ -276,11 +292,12 @@ def evaluate_split(
                     top5_hits += 1
                 mrr_sum += 1.0 / first_pos_rank
 
+            prev_bucket = total_actions // 100
             total_actions += 1
-            total_ms += infer_ms
+            total_ms += per_step_ms
             total_cands_evaluated += len(pool)
 
-            if total_actions % 50 == 0:
+            if total_actions // 100 > prev_bucket:
                 print(
                     f"  [{split_name}] {total_actions} steps | "
                     f"Prec@0: {top1_hits / total_actions * 100:.2f}% | "
@@ -289,8 +306,62 @@ def evaluate_split(
                 )
                 gc.collect()
 
-        if max_actions is not None and total_actions >= max_actions:
+        pending_steps.clear()
+
+    for row in ds:
+        for act in iter_action_records(row):
+            if max_actions is not None and queued_actions >= max_actions:
+                break
+
+            pos_cands = act["pos_candidates"]
+            neg_cands = act["neg_candidates"]
+            if not pos_cands:
+                continue
+
+            query = clean_query(act["action_repr"])
+            if len(query) < 3:
+                continue
+
+            raw_html = act["cleaned_html"]
+            html_key = hash(raw_html)
+            if html_key != last_html_key:
+                last_lookup = build_node_lookup(raw_html)
+                last_html_key = html_key
+            lookup = last_lookup
+
+            pos_ids = {str(p.get("backend_node_id", "")) for p in pos_cands}
+
+            pool = []
+            seen_ids = set()
+            for cand in pos_cands + neg_cands:
+                nid = str(cand.get("backend_node_id", ""))
+                if nid and nid in seen_ids:
+                    continue
+                if nid:
+                    seen_ids.add(nid)
+                pool.append(
+                    {
+                        "node_id": nid,
+                        "is_pos": nid in pos_ids,
+                        "serialized": serialize_candidate(cand, lookup),
+                    }
+                )
+
+            if max_candidates and len(pool) > max_candidates:
+                positives = [c for c in pool if c["is_pos"]]
+                negatives = [c for c in pool if not c["is_pos"]]
+                pool = positives + negatives[: max(0, max_candidates - len(positives))]
+
+            pending_steps.append({"query": query, "pool": pool})
+            queued_actions += 1
+
+            if len(pending_steps) >= step_chunk_size:
+                flush_pending()
+
+        if max_actions is not None and queued_actions >= max_actions:
             break
+
+    flush_pending()
 
     threshold_metrics = []
     for t in thresholds:
@@ -413,7 +484,13 @@ def main():
         default=50,
         help="Candidate pool size per action (default: 50, matching MindAct stage-1 protocol; 0 = all)",
     )
-    parser.add_argument("--batch-size", type=int, default=32, help="ONNX mini-batch size (default: 32)")
+    parser.add_argument("--batch-size", type=int, default=128, help="ONNX mini-batch size across steps (default: 128)")
+    parser.add_argument(
+        "--step-chunk-size",
+        type=int,
+        default=16,
+        help="Number of Mind2Web steps to group per batched ONNX forward pass (default: 16)",
+    )
     parser.add_argument(
         "--device",
         choices=["auto", "gpu", "cuda", "coreml", "cpu"],
@@ -468,6 +545,7 @@ def main():
             max_actions=args.max_actions,
             max_candidates=args.max_candidates,
             batch_size=args.batch_size,
+            step_chunk_size=args.step_chunk_size,
             thresholds=thresholds,
             confidence_threshold=args.confidence_threshold,
         )
