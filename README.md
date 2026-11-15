@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://pypi.org/project/folate/">PyPI</a> •
   <a href="https://huggingface.co/figranium/folate">Hugging Face</a> •
-  <a href="https://github.com/figranium/folate">GitHub</a> •
+  <a href="https://huggingface.co/spaces/figranium/folate-demo">Demo</a> •
   <a href="https://github.com/figranium/folate/blob/main/LICENSE">Apache 2.0</a>
 </p>
 
