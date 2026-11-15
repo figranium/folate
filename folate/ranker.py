@@ -35,7 +35,7 @@ STOP_WORDS = {
 
 
 class FolateSelectorFinder:
-    """Lightweight cross-encoder ranker for webpage DOM elements (CPU & GPU)."""
+    """Lightweight cross-encoder ranker for webpage DOM elements (CPU & CUDA GPU)."""
 
     def __init__(
         self,
@@ -52,16 +52,17 @@ class FolateSelectorFinder:
 
         available = ort.get_available_providers()
         if providers is None:
+            # Prefer CUDA on GPU machines, otherwise use CPUExecutionProvider (avoids CoreML dynamic-shape leaks on macOS)
             providers = [
                 p
-                for p in ("CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider")
+                for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
                 if p in available
             ] or ["CPUExecutionProvider"]
 
-        # Note: INT8 QUInt8 dynamic models run fastest on CPU; FP32 ONNX runs natively on CUDA/CoreML.
+        # INT8 QUInt8 dynamic models run fastest on CPU; FP32 ONNX runs natively on CUDA.
         if model_filename is None:
-            using_gpu = any(p != "CPUExecutionProvider" for p in providers)
-            model_filename = "model.onnx" if using_gpu else "model_quantized.onnx"
+            using_cuda = "CUDAExecutionProvider" in providers and "CUDAExecutionProvider" in available
+            model_filename = "model.onnx" if using_cuda else "model_quantized.onnx"
 
         base_dir = None
         if model_dir is not None and os.path.isdir(model_dir):
