@@ -90,7 +90,7 @@ def score_candidates(
     finder: FolateSelectorFinder,
     query: str,
     candidates: list[dict],
-    batch_size: int = 16,
+    batch_size: int = 64,
 ) -> np.ndarray:
     pairs = [(query, c["serialized"]) for c in candidates]
     all_logits = []
@@ -161,9 +161,9 @@ def evaluate_split(
     split_name: str,
     max_actions: int | None = None,
     max_candidates: int = 50,
-    batch_size: int = 16,
+    batch_size: int = 64,
     thresholds: list[float] | None = None,
-    confidence_threshold: float = 0.0,
+    confidence_threshold: float = 0.5,
 ) -> dict:
     thresholds = sorted(set(thresholds or DEFAULT_THRESHOLDS))
     print(f"\nStreaming {dataset_name} split='{split_name}'...")
@@ -184,7 +184,7 @@ def evaluate_split(
     total_ms = 0.0
     total_cands_evaluated = 0
 
-    # Per-threshold precision / recall / F1 counters (for Top-1 selective prediction)
+    # Per-threshold precision / recall / F1 counters (Top-1 selective prediction on calibrated [0, 1] score)
     sweep_counts = {
         t: {"tp": 0, "fp": 0, "abstained": 0} for t in thresholds
     }
@@ -234,7 +234,8 @@ def evaluate_split(
             t0 = time.perf_counter()
             logits = score_candidates(finder, query, pool, batch_size=batch_size)
             infer_ms = (time.perf_counter() - t0) * 1000
-            probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -60.0, 60.0)))
+            # Model is trained with MSE regression on [0.0, 1.0] labels, so logits are direct [0, 1] confidence scores
+            probs = np.clip(logits, 0.0, 1.0)
 
             ranked_idx = np.argsort(-logits)
             top1_idx = int(ranked_idx[0])
@@ -278,12 +279,10 @@ def evaluate_split(
             total_ms += infer_ms
             total_cands_evaluated += len(pool)
 
-            if total_actions % 100 == 0:
+            if total_actions % 250 == 0:
                 print(
                     f"  [{split_name}] {total_actions} steps | "
-                    f"Top-1: {top1_hits / total_actions * 100:.1f}% | "
-                    f"Top-3: {top3_hits / total_actions * 100:.1f}% | "
-                    f"Top-5: {top5_hits / total_actions * 100:.1f}% | "
+                    f"Top-1/Prec@0: {top1_hits / total_actions * 100:.2f}% | "
                     f"Avg: {total_ms / total_actions:.1f} ms/step"
                 )
 
@@ -313,7 +312,6 @@ def evaluate_split(
             }
         )
 
-    # Primary Top-1 precision/recall at the requested --confidence-threshold
     active_entry = min(
         threshold_metrics, key=lambda item: abs(item["threshold"] - confidence_threshold)
     )
@@ -412,19 +410,30 @@ def main():
         default=50,
         help="Candidate pool size per action (default: 50, matching MindAct stage-1 protocol; 0 = all)",
     )
-    parser.add_argument("--batch-size", type=int, default=16, help="ONNX mini-batch size")
+    parser.add_argument("--batch-size", type=int, default=64, help="ONNX mini-batch size (default: 64)")
+    parser.add_argument(
+        "--device",
+        choices=["auto", "gpu", "cuda", "coreml", "cpu"],
+        default="auto",
+        help="Execution device / ONNX Runtime provider (default: auto)",
+    )
+    parser.add_argument(
+        "--precision-only",
+        action="store_true",
+        help="Print only Precision / Recall / F1 / Coverage metrics and threshold sweep",
+    )
     parser.add_argument(
         "--confidence-threshold",
         type=float,
         default=0.5,
-        help="Sigmoid probability threshold for Top-1 Precision / Recall / F1 reporting (default: 0.5)",
+        help="Calibrated [0, 1] confidence threshold for Top-1 Precision / Recall / F1 reporting (default: 0.5)",
     )
     parser.add_argument(
         "--thresholds",
         nargs="+",
         type=float,
         default=DEFAULT_THRESHOLDS,
-        help="Probability thresholds to sweep for Precision-Recall tradeoff curve",
+        help="Confidence thresholds to sweep for Precision-Recall tradeoff curve",
     )
     parser.add_argument("--model-dir", default=None, help="Optional local model directory override")
     parser.add_argument("--model-id", default="figranium/folate", help="Hugging Face model ID for model-index YAML")
@@ -436,8 +445,18 @@ def main():
     )
     args = parser.parse_args()
 
+    provider_map = {
+        "auto": None,
+        "gpu": ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
+        "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        "coreml": ["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        "cpu": ["CPUExecutionProvider"],
+    }
+
     thresholds = sorted(set(list(args.thresholds) + [args.confidence_threshold]))
-    finder = FolateSelectorFinder(model_dir=args.model_dir)
+    finder = FolateSelectorFinder(model_dir=args.model_dir, providers=provider_map[args.device])
+    print(f"Active ONNX Runtime providers: {finder.active_providers}")
+
     results = [
         evaluate_split(
             finder=finder,
@@ -452,22 +471,39 @@ def main():
         for split in args.splits
     ]
 
-    print(f"\n{'=' * 106}")
-    print("MIND2WEB OFFICIAL TEST SPLIT RESULTS")
-    print(f"{'=' * 106}")
-    print(
-        f"{'Split':<13} | {'Steps':>5} | {'Top-1':>6} | {'Top-3':>6} | {'Top-5':>6} | "
-        f"{'MRR':>6} | {'Prec@' + f'{args.confidence_threshold:.2f}':>9} | "
-        f"{'Rec@' + f'{args.confidence_threshold:.2f}':>8} | {'F1':>6} | {'Latency':>9}"
-    )
-    print("-" * 106)
-    for r in results:
+    if args.precision_only:
+        print(f"\n{'=' * 92}")
+        print("MIND2WEB PRECISION SUMMARY")
+        print(f"{'=' * 92}")
         print(
-            f"{r['split']:<13} | {r['steps']:>5d} | {r['top1_acc']:>5.2f}% | "
-            f"{r['top3_acc']:>5.2f}% | {r['top5_acc']:>5.2f}% | {r['mrr']:>6.4f} | "
-            f"{r['precision']:>8.2f}% | {r['recall']:>7.2f}% | {r['f1']:>5.2f}% | "
-            f"{r['avg_ms_per_step']:>6.1f} ms"
+            f"{'Split':<13} | {'Steps':>5} | {'Prec@' + f'{args.confidence_threshold:.2f}':>9} | "
+            f"{'Rec@' + f'{args.confidence_threshold:.2f}':>8} | {'F1':>6} | "
+            f"{'Coverage':>8} | {'Cand-Prec':>9} | {'Latency':>9}"
         )
+        print("-" * 92)
+        for r in results:
+            print(
+                f"{r['split']:<13} | {r['steps']:>5d} | {r['precision']:>8.2f}% | "
+                f"{r['recall']:>7.2f}% | {r['f1']:>5.2f}% | {r['coverage']:>7.2f}% | "
+                f"{r['candidate_precision']:>8.2f}% | {r['avg_ms_per_step']:>6.1f} ms"
+            )
+    else:
+        print(f"\n{'=' * 106}")
+        print("MIND2WEB OFFICIAL TEST SPLIT RESULTS")
+        print(f"{'=' * 106}")
+        print(
+            f"{'Split':<13} | {'Steps':>5} | {'Top-1':>6} | {'Top-3':>6} | {'Top-5':>6} | "
+            f"{'MRR':>6} | {'Prec@' + f'{args.confidence_threshold:.2f}':>9} | "
+            f"{'Rec@' + f'{args.confidence_threshold:.2f}':>8} | {'F1':>6} | {'Latency':>9}"
+        )
+        print("-" * 106)
+        for r in results:
+            print(
+                f"{r['split']:<13} | {r['steps']:>5d} | {r['top1_acc']:>5.2f}% | "
+                f"{r['top3_acc']:>5.2f}% | {r['top5_acc']:>5.2f}% | {r['mrr']:>6.4f} | "
+                f"{r['precision']:>8.2f}% | {r['recall']:>7.2f}% | {r['f1']:>5.2f}% | "
+                f"{r['avg_ms_per_step']:>6.1f} ms"
+            )
 
     print(f"\n{'=' * 78}")
     print("PRECISION / RECALL THRESHOLD SWEEP (TOP-1 SELECTIVE PREDICTION)")
@@ -483,22 +519,24 @@ def main():
                 f"{row['precision']:>8.2f}% | {row['recall']:>6.2f}% | {row['f1']:>5.2f}%"
             )
 
-    hf_yaml = build_hf_model_index(args.model_id, args.dataset, results, args.max_candidates)
-    print(f"\n{'=' * 106}")
-    print("HUGGING FACE MODEL CARD METADATA (model-index YAML)")
-    print(f"{'=' * 106}")
-    print(hf_yaml)
+    if not args.precision_only:
+        hf_yaml = build_hf_model_index(args.model_id, args.dataset, results, args.max_candidates)
+        print(f"\n{'=' * 106}")
+        print("HUGGING FACE MODEL CARD METADATA (model-index YAML)")
+        print(f"{'=' * 106}")
+        print(hf_yaml)
 
-    if args.hf_yaml_out:
-        with open(args.hf_yaml_out, "w", encoding="utf-8") as f:
-            f.write(hf_yaml)
-        print(f"Saved Hugging Face model-index YAML to {args.hf_yaml_out}")
+        if args.hf_yaml_out:
+            with open(args.hf_yaml_out, "w", encoding="utf-8") as f:
+                f.write(hf_yaml)
+            print(f"Saved Hugging Face model-index YAML to {args.hf_yaml_out}")
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "dataset": args.dataset,
+                    "providers": finder.active_providers,
                     "max_candidates": args.max_candidates,
                     "confidence_threshold": args.confidence_threshold,
                     "results": results,
