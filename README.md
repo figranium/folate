@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/figranium/folate/main/banner.png" alt="Folate" width="100%" style="max-height: 220px; object-fit: cover;">
+  <img src="https://raw.githubusercontent.com/figranium/folate/main/banner.png" alt="Folate" width="100%">
 </p>
 
 <p align="center">
@@ -7,16 +7,17 @@
 </p>
 
 <p align="center">
-  <a href="https://huggingface.co/figranium/folate"><strong>Hugging Face</strong></a>
-  &nbsp;&bull;&nbsp;
-  <a href="https://pypi.org/project/folate/"><strong>PyPI</strong></a>
-  &nbsp;&bull;&nbsp;
-  <a href="https://github.com/figranium/folate"><strong>GitHub</strong></a>
-  &nbsp;&bull;&nbsp;
-  <a href="https://github.com/figranium/folate/blob/main/LICENSE"><strong>Apache 2.0 License</strong></a>
+  <a href="https://pypi.org/project/folate/">PyPI</a> •
+  <a href="https://huggingface.co/figranium/folate">Hugging Face</a> •
+  <a href="https://github.com/figranium/folate">GitHub</a> •
+  <a href="https://github.com/figranium/folate/blob/main/LICENSE">Apache 2.0</a>
 </p>
 
-Folate is a lightweight, CPU-efficient neural DOM element ranker built for browser automation within tight memory constraints (<2 GB total footprint alongside a headless browser). Fine-tuned from [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web) and dynamically quantized to **INT8 ONNX (~107 MB)**, Folate runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
+<p align="center">
+  A lightweight, CPU-efficient neural DOM element ranker built for browser automation within tight memory constraints (&lt;2 GB total footprint alongside a headless browser).
+</p>
+
+Fine-tuned from [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web) and dynamically quantized to **INT8 ONNX (~107 MB)**, Folate runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
 
 ---
 
@@ -104,7 +105,8 @@ folate/
 │   ├── prepare_data.py            # Streaming Mind2Web serializer (lxml)
 │   ├── train.py                   # Fine-tuning script (bf16/fp16/CPU)
 │   ├── export_onnx.py             # FP32 ONNX export + INT8 dynamic quantization
-│   └── eval_mind2web.py           # Official Mind2Web test split evaluator (Top-1/3/5 & MRR)
+│   ├── eval_mind2web.py           # Official Mind2Web evaluator (Precision/Recall/F1, Top-1/3/5 & MRR)
+│   └── eval_precision.py          # Playwright DOM-resolved selector Precision & Recall benchmark
 ├── examples/
 │   ├── test_google.py             # Live Playwright search box grounding on google.com
 │   ├── test_amazon.py             # E-commerce element ranking on amazon.com (+ offline snapshot)
@@ -134,6 +136,7 @@ Folate is evaluated on the three standard generalization splits of **Mind2Web** 
 * **Task Formulation:** At each step, the model receives the natural-language task instruction, action history context, and up to **50 candidate DOM elements** (`Avg Candidates ≈ 50.0`) extracted from the page snapshot, and outputs a relevance logit per candidate.
 * **Metrics:**
   * **Top-1 / Top-3 / Top-5:** Percentage of steps where a ground-truth target node (`pos_candidates`) appears within the top *k* ranked elements.
+  * **Precision / Recall / F1:** Selective Top-1 precision (`TP / (TP + FP)`) and recall (`TP / Total`) across confidence probability thresholds (`--confidence-threshold`, `--thresholds`), plus candidate-level binary precision/recall.
   * **MRR (Mean Reciprocal Rank):** Average reciprocal rank for the highest-ranked ground-truth element across all evaluated steps.
 * **Hardware & Runtime:** Latency is measured end-to-end per step on **2 vCPUs** with **no GPU acceleration**, using the exported INT8 quantized ONNX artifact (`onnxruntime`). Variance between `test_website` (`4,328.2 ms/step`) and `test_domain` (`2,431.0 ms/step`) reflects longer tokenized DOM attribute sequences on unseen site templates rather than candidate count.
 
@@ -162,9 +165,9 @@ python examples/test_github.py
 
 ---
 
-## Training & Evaluation Pipeline
+## Training & Quantization Pipeline
 
-To reproduce data preparation, fine-tuning, INT8 ONNX export, and evaluation on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web):
+To reproduce data preparation, fine-tuning, INT8 ONNX export, and evaluation from scratch on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web):
 
 ```bash
 python -m pip install -r requirements-train.txt
@@ -178,8 +181,11 @@ python scripts/train.py --data-dir ./data --save-dir ./folate-base
 # 3. Export to FP32 ONNX and quantize to INT8 (~107 MB)
 python scripts/export_onnx.py --model-dir ./folate-base --output-dir ./folate-int8
 
-# 4. Evaluate on official Mind2Web test splits (test_task, test_website, test_domain)
-python scripts/eval_mind2web.py --json-out mind2web_results.json
+# 4. Evaluate Mind2Web test splits (Precision, Recall, F1, Top-1/3/5 & MRR)
+python scripts/eval_mind2web.py --confidence-threshold 0.5 --json-out mind2web_results.json
+
+# 5. Run Playwright DOM-resolved selector Precision & Recall benchmark
+python scripts/eval_precision.py --confidence-threshold 0.5 --json-out precision_results.json
 ```
 
 ---
@@ -195,4 +201,4 @@ python scripts/eval_mind2web.py --json-out mind2web_results.json
 
 ## License
 
-Folate is released under the [Apache 2.0 License](https://github.com/figranium/folate/blob/main/LICENSE).
+Folate is released under the [Apache 2.0 License](LICENSE).
