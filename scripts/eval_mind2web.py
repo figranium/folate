@@ -26,6 +26,7 @@ KEEP_ATTRS = [
 
 TEST_SPLITS = ("test_task", "test_website", "test_domain")
 DEFAULT_DATASET = "osunlp/Multimodal-Mind2Web"
+DEFAULT_THRESHOLDS = [0.0, 0.25, 0.5, 0.75, 0.9]
 
 
 def parse_candidate_list(raw_cands) -> list[dict]:
@@ -161,7 +162,10 @@ def evaluate_split(
     max_actions: int | None = None,
     max_candidates: int = 50,
     batch_size: int = 16,
+    thresholds: list[float] | None = None,
+    confidence_threshold: float = 0.0,
 ) -> dict:
+    thresholds = sorted(set(thresholds or DEFAULT_THRESHOLDS))
     print(f"\nStreaming {dataset_name} split='{split_name}'...")
     ds = load_dataset(dataset_name, split=split_name, streaming=True)
     # Disable image decoding on screenshot before removing it so Pillow is never required
@@ -179,6 +183,15 @@ def evaluate_split(
     mrr_sum = 0.0
     total_ms = 0.0
     total_cands_evaluated = 0
+
+    # Per-threshold precision / recall / F1 counters (for Top-1 selective prediction)
+    sweep_counts = {
+        t: {"tp": 0, "fp": 0, "abstained": 0} for t in thresholds
+    }
+    # Candidate-level binary classification counters at confidence_threshold (all candidates in pool)
+    cand_tp = 0
+    cand_fp = 0
+    cand_fn = 0
 
     for row in ds:
         for act in iter_action_records(row):
@@ -221,8 +234,31 @@ def evaluate_split(
             t0 = time.perf_counter()
             logits = score_candidates(finder, query, pool, batch_size=batch_size)
             infer_ms = (time.perf_counter() - t0) * 1000
+            probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -60.0, 60.0)))
 
             ranked_idx = np.argsort(-logits)
+            top1_idx = int(ranked_idx[0])
+            top1_prob = float(probs[top1_idx])
+            top1_is_pos = bool(pool[top1_idx]["is_pos"])
+
+            for t in thresholds:
+                if top1_prob >= t:
+                    if top1_is_pos:
+                        sweep_counts[t]["tp"] += 1
+                    else:
+                        sweep_counts[t]["fp"] += 1
+                else:
+                    sweep_counts[t]["abstained"] += 1
+
+            for idx, cand in enumerate(pool):
+                pred_pos = float(probs[idx]) >= confidence_threshold
+                if pred_pos and cand["is_pos"]:
+                    cand_tp += 1
+                elif pred_pos and not cand["is_pos"]:
+                    cand_fp += 1
+                elif not pred_pos and cand["is_pos"]:
+                    cand_fn += 1
+
             first_pos_rank = None
             for rank_pos, idx in enumerate(ranked_idx, start=1):
                 if pool[idx]["is_pos"]:
@@ -254,6 +290,37 @@ def evaluate_split(
         if max_actions is not None and total_actions >= max_actions:
             break
 
+    threshold_metrics = []
+    for t in thresholds:
+        tp = sweep_counts[t]["tp"]
+        fp = sweep_counts[t]["fp"]
+        abstained = sweep_counts[t]["abstained"]
+        predicted = tp + fp
+        prec = (tp / predicted * 100) if predicted else 0.0
+        rec = (tp / total_actions * 100) if total_actions else 0.0
+        f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) else 0.0
+        cov = (predicted / total_actions * 100) if total_actions else 0.0
+        threshold_metrics.append(
+            {
+                "threshold": t,
+                "tp": tp,
+                "fp": fp,
+                "abstained": abstained,
+                "coverage": round(cov, 2),
+                "precision": round(prec, 2),
+                "recall": round(rec, 2),
+                "f1": round(f1, 2),
+            }
+        )
+
+    # Primary Top-1 precision/recall at the requested --confidence-threshold
+    active_entry = min(
+        threshold_metrics, key=lambda item: abs(item["threshold"] - confidence_threshold)
+    )
+    cand_prec = (cand_tp / (cand_tp + cand_fp) * 100) if (cand_tp + cand_fp) else 0.0
+    cand_rec = (cand_tp / (cand_tp + cand_fn) * 100) if (cand_tp + cand_fn) else 0.0
+    cand_f1 = (2 * cand_prec * cand_rec / (cand_prec + cand_rec)) if (cand_prec + cand_rec) else 0.0
+
     return {
         "split": split_name,
         "steps": total_actions,
@@ -262,6 +329,15 @@ def evaluate_split(
         "top3_acc": round(top3_hits / total_actions * 100, 2) if total_actions else 0.0,
         "top5_acc": round(top5_hits / total_actions * 100, 2) if total_actions else 0.0,
         "mrr": round(mrr_sum / total_actions, 4) if total_actions else 0.0,
+        "confidence_threshold": active_entry["threshold"],
+        "precision": active_entry["precision"],
+        "recall": active_entry["recall"],
+        "f1": active_entry["f1"],
+        "coverage": active_entry["coverage"],
+        "candidate_precision": round(cand_prec, 2),
+        "candidate_recall": round(cand_rec, 2),
+        "candidate_f1": round(cand_f1, 2),
+        "threshold_sweep": threshold_metrics,
         "avg_ms_per_step": round(total_ms / total_actions, 2) if total_actions else 0.0,
     }
 
@@ -284,6 +360,15 @@ def build_hf_model_index(model_id: str, dataset_name: str, results: list[dict], 
                 f"      name: Mind2Web ({split_label})",
                 f"      split: {r['split']}",
                 "    metrics:",
+                "    - type: precision",
+                f"      value: {r['precision']}",
+                f"      name: Top-1 Precision @ {r['confidence_threshold']:.2f} ({max_candidates} cands)",
+                "    - type: recall",
+                f"      value: {r['recall']}",
+                f"      name: Top-1 Recall @ {r['confidence_threshold']:.2f} ({max_candidates} cands)",
+                "    - type: f1",
+                f"      value: {r['f1']}",
+                f"      name: Top-1 F1 @ {r['confidence_threshold']:.2f} ({max_candidates} cands)",
                 "    - type: accuracy",
                 f"      value: {r['top1_acc']}",
                 f"      name: Top-1 Accuracy ({max_candidates} cands)",
@@ -328,6 +413,19 @@ def main():
         help="Candidate pool size per action (default: 50, matching MindAct stage-1 protocol; 0 = all)",
     )
     parser.add_argument("--batch-size", type=int, default=16, help="ONNX mini-batch size")
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.5,
+        help="Sigmoid probability threshold for Top-1 Precision / Recall / F1 reporting (default: 0.5)",
+    )
+    parser.add_argument(
+        "--thresholds",
+        nargs="+",
+        type=float,
+        default=DEFAULT_THRESHOLDS,
+        help="Probability thresholds to sweep for Precision-Recall tradeoff curve",
+    )
     parser.add_argument("--model-dir", default=None, help="Optional local model directory override")
     parser.add_argument("--model-id", default="figranium/folate", help="Hugging Face model ID for model-index YAML")
     parser.add_argument("--json-out", default=None, help="Optional path to write JSON evaluation metrics")
@@ -338,6 +436,7 @@ def main():
     )
     args = parser.parse_args()
 
+    thresholds = sorted(set(list(args.thresholds) + [args.confidence_threshold]))
     finder = FolateSelectorFinder(model_dir=args.model_dir)
     results = [
         evaluate_split(
@@ -347,26 +446,47 @@ def main():
             max_actions=args.max_actions,
             max_candidates=args.max_candidates,
             batch_size=args.batch_size,
+            thresholds=thresholds,
+            confidence_threshold=args.confidence_threshold,
         )
         for split in args.splits
     ]
 
-    print(f"\n{'=' * 82}")
+    print(f"\n{'=' * 106}")
     print("MIND2WEB OFFICIAL TEST SPLIT RESULTS")
-    print(f"{'=' * 82}")
-    print(f"{'Split':<15} | {'Steps':>6} | {'Cands':>5} | {'Top-1':>7} | {'Top-3':>7} | {'Top-5':>7} | {'MRR':>6} | {'Latency':>9}")
-    print("-" * 82)
+    print(f"{'=' * 106}")
+    print(
+        f"{'Split':<13} | {'Steps':>5} | {'Top-1':>6} | {'Top-3':>6} | {'Top-5':>6} | "
+        f"{'MRR':>6} | {'Prec@' + f'{args.confidence_threshold:.2f}':>9} | "
+        f"{'Rec@' + f'{args.confidence_threshold:.2f}':>8} | {'F1':>6} | {'Latency':>9}"
+    )
+    print("-" * 106)
     for r in results:
         print(
-            f"{r['split']:<15} | {r['steps']:>6d} | {r['avg_candidates']:>5.1f} | "
-            f"{r['top1_acc']:>6.2f}% | {r['top3_acc']:>6.2f}% | {r['top5_acc']:>6.2f}% | "
-            f"{r['mrr']:>6.4f} | {r['avg_ms_per_step']:>6.1f} ms"
+            f"{r['split']:<13} | {r['steps']:>5d} | {r['top1_acc']:>5.2f}% | "
+            f"{r['top3_acc']:>5.2f}% | {r['top5_acc']:>5.2f}% | {r['mrr']:>6.4f} | "
+            f"{r['precision']:>8.2f}% | {r['recall']:>7.2f}% | {r['f1']:>5.2f}% | "
+            f"{r['avg_ms_per_step']:>6.1f} ms"
         )
 
+    print(f"\n{'=' * 78}")
+    print("PRECISION / RECALL THRESHOLD SWEEP (TOP-1 SELECTIVE PREDICTION)")
+    print(f"{'=' * 78}")
+    for r in results:
+        print(f"\n[{r['split']}] (Candidate-level @ {r['confidence_threshold']:.2f}: P={r['candidate_precision']:.2f}%, R={r['candidate_recall']:.2f}%, F1={r['candidate_f1']:.2f}%)")
+        print(f"  {'Thresh':>6} | {'TP':>5} | {'FP':>5} | {'Abstain':>7} | {'Coverage':>8} | {'Precision':>9} | {'Recall':>7} | {'F1':>6}")
+        print("  " + "-" * 72)
+        for row in r["threshold_sweep"]:
+            print(
+                f"  {row['threshold']:>6.2f} | {row['tp']:>5d} | {row['fp']:>5d} | "
+                f"{row['abstained']:>7d} | {row['coverage']:>7.2f}% | "
+                f"{row['precision']:>8.2f}% | {row['recall']:>6.2f}% | {row['f1']:>5.2f}%"
+            )
+
     hf_yaml = build_hf_model_index(args.model_id, args.dataset, results, args.max_candidates)
-    print(f"\n{'=' * 82}")
+    print(f"\n{'=' * 106}")
     print("HUGGING FACE MODEL CARD METADATA (model-index YAML)")
-    print(f"{'=' * 82}")
+    print(f"{'=' * 106}")
     print(hf_yaml)
 
     if args.hf_yaml_out:
@@ -376,7 +496,16 @@ def main():
 
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump({"dataset": args.dataset, "max_candidates": args.max_candidates, "results": results}, f, indent=2)
+            json.dump(
+                {
+                    "dataset": args.dataset,
+                    "max_candidates": args.max_candidates,
+                    "confidence_threshold": args.confidence_threshold,
+                    "results": results,
+                },
+                f,
+                indent=2,
+            )
         print(f"Saved evaluation report to {args.json_out}")
 
 
