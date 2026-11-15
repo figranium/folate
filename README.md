@@ -4,8 +4,6 @@
 
 <p align="center">
   <a href="https://huggingface.co/figranium/folate"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-lg.svg" alt="Model on Hugging Face"></a>
-  &nbsp;
-  <a href="https://pypi.org/project/folate/"><img src="https://img.shields.io/pypi/v/folate?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI&color=3775A9" alt="PyPI"></a>
 </p>
 
 <p align="center">
