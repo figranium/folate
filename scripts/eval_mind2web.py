@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import os
 import re
@@ -90,7 +91,7 @@ def score_candidates(
     finder: FolateSelectorFinder,
     query: str,
     candidates: list[dict],
-    batch_size: int = 64,
+    batch_size: int = 32,
 ) -> np.ndarray:
     pairs = [(query, c["serialized"]) for c in candidates]
     all_logits = []
@@ -161,12 +162,12 @@ def evaluate_split(
     split_name: str,
     max_actions: int | None = None,
     max_candidates: int = 50,
-    batch_size: int = 64,
+    batch_size: int = 32,
     thresholds: list[float] | None = None,
     confidence_threshold: float = 0.5,
 ) -> dict:
     thresholds = sorted(set(thresholds or DEFAULT_THRESHOLDS))
-    print(f"\nStreaming {dataset_name} split='{split_name}'...")
+    print(f"\nStreaming {dataset_name} split='{split_name}'...", flush=True)
     ds = load_dataset(dataset_name, split=split_name, streaming=True)
     # Disable image decoding on screenshot before removing it so Pillow is never required
     features = getattr(ds, "features", None) or {}
@@ -279,12 +280,14 @@ def evaluate_split(
             total_ms += infer_ms
             total_cands_evaluated += len(pool)
 
-            if total_actions % 250 == 0:
+            if total_actions % 50 == 0:
                 print(
                     f"  [{split_name}] {total_actions} steps | "
-                    f"Top-1/Prec@0: {top1_hits / total_actions * 100:.2f}% | "
-                    f"Avg: {total_ms / total_actions:.1f} ms/step"
+                    f"Prec@0: {top1_hits / total_actions * 100:.2f}% | "
+                    f"Avg: {total_ms / total_actions:.1f} ms/step",
+                    flush=True,
                 )
+                gc.collect()
 
         if max_actions is not None and total_actions >= max_actions:
             break
@@ -410,7 +413,7 @@ def main():
         default=50,
         help="Candidate pool size per action (default: 50, matching MindAct stage-1 protocol; 0 = all)",
     )
-    parser.add_argument("--batch-size", type=int, default=64, help="ONNX mini-batch size (default: 64)")
+    parser.add_argument("--batch-size", type=int, default=32, help="ONNX mini-batch size (default: 32)")
     parser.add_argument(
         "--device",
         choices=["auto", "gpu", "cuda", "coreml", "cpu"],
@@ -447,7 +450,7 @@ def main():
 
     provider_map = {
         "auto": None,
-        "gpu": ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"],
+        "gpu": ["CUDAExecutionProvider", "CPUExecutionProvider"],
         "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
         "coreml": ["CoreMLExecutionProvider", "CPUExecutionProvider"],
         "cpu": ["CPUExecutionProvider"],
@@ -455,7 +458,7 @@ def main():
 
     thresholds = sorted(set(list(args.thresholds) + [args.confidence_threshold]))
     finder = FolateSelectorFinder(model_dir=args.model_dir, providers=provider_map[args.device])
-    print(f"Active ONNX Runtime providers: {finder.active_providers}")
+    print(f"Active ONNX Runtime providers: {finder.active_providers}", flush=True)
 
     results = [
         evaluate_split(
