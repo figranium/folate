@@ -41,6 +41,12 @@ Folate operates as a discriminative cross-encoder that scores `(natural_language
 ### Installation
 
 ```bash
+pip install folate
+```
+
+Or install from source:
+
+```bash
 git clone https://github.com/figranium/folate
 cd folate
 python3 -m venv .venv
