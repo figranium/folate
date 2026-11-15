@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="banner.png" alt="Folate" width="100%" style="max-height: 220px; object-fit: cover;">
+  <img src="https://raw.githubusercontent.com/figranium/folate/main/banner.png" alt="Folate" width="100%" style="max-height: 220px; object-fit: cover;">
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   &nbsp;&bull;&nbsp;
   <a href="https://github.com/figranium/folate"><strong>GitHub</strong></a>
   &nbsp;&bull;&nbsp;
-  <a href="LICENSE"><strong>Apache 2.0 License</strong></a>
+  <a href="https://github.com/figranium/folate/blob/main/LICENSE"><strong>Apache 2.0 License</strong></a>
 </p>
 
 Folate is a lightweight, CPU-efficient neural DOM element ranker built for browser automation within tight memory constraints (<2 GB total footprint alongside a headless browser). Fine-tuned from [`google/electra-base-discriminator`](https://huggingface.co/google/electra-base-discriminator) on [`osunlp/Mind2Web`](https://huggingface.co/datasets/osunlp/Mind2Web) and dynamically quantized to **INT8 ONNX (~107 MB)**, Folate runs purely via `onnxruntime` and `tokenizers`—requiring no PyTorch or `transformers` at inference time.
@@ -193,4 +193,4 @@ python scripts/eval_mind2web.py --json-out mind2web_results.json
 
 ## License
 
-Folate is released under the [Apache 2.0 License](LICENSE).
+Folate is released under the [Apache 2.0 License](https://github.com/figranium/folate/blob/main/LICENSE).
