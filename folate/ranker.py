@@ -35,7 +35,7 @@ STOP_WORDS = {
 
 
 class FolateSelectorFinder:
-    """Lightweight CPU cross-encoder ranker for webpage DOM elements."""
+    """Lightweight cross-encoder ranker for webpage DOM elements (CPU & GPU)."""
 
     def __init__(
         self,
@@ -43,23 +43,55 @@ class FolateSelectorFinder:
         repo_id: str = DEFAULT_REPO_ID,
         revision: str | None = None,
         num_threads: int = 4,
+        providers: list[str] | None = None,
+        model_filename: str | None = None,
     ):
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = num_threads
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
+        available = ort.get_available_providers()
+        if providers is None:
+            providers = [
+                p
+                for p in ("CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider")
+                if p in available
+            ] or ["CPUExecutionProvider"]
+
+        # Note: INT8 QUInt8 dynamic models run fastest on CPU; FP32 ONNX runs natively on CUDA/CoreML.
+        if model_filename is None:
+            using_gpu = any(p != "CPUExecutionProvider" for p in providers)
+            model_filename = "model.onnx" if using_gpu else "model_quantized.onnx"
+
+        base_dir = None
         if model_dir is not None and os.path.isdir(model_dir):
-            model_path = os.path.join(model_dir, "model_quantized.onnx")
-            tokenizer_path = os.path.join(model_dir, "tokenizer.json")
+            base_dir = model_dir
         elif os.path.isdir("./folate-int8"):
-            model_path = os.path.join("./folate-int8", "model_quantized.onnx")
-            tokenizer_path = os.path.join("./folate-int8", "tokenizer.json")
+            base_dir = "./folate-int8"
+
+        if base_dir is not None and os.path.isfile(os.path.join(base_dir, model_filename)):
+            model_path = os.path.join(base_dir, model_filename)
+            tokenizer_path = os.path.join(base_dir, "tokenizer.json")
+        elif (
+            base_dir is not None
+            and model_filename != "model_quantized.onnx"
+            and os.path.isfile(os.path.join(base_dir, "model_quantized.onnx"))
+        ):
+            model_path = os.path.join(base_dir, "model_quantized.onnx")
+            tokenizer_path = os.path.join(base_dir, "tokenizer.json")
         else:
-            model_path = hf_hub_download(
-                repo_id=repo_id,
-                filename="model_quantized.onnx",
-                revision=revision,
-            )
+            try:
+                model_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=model_filename,
+                    revision=revision,
+                )
+            except Exception:
+                model_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename="model_quantized.onnx",
+                    revision=revision,
+                )
             tokenizer_path = hf_hub_download(
                 repo_id=repo_id,
                 filename="tokenizer.json",
@@ -69,8 +101,9 @@ class FolateSelectorFinder:
         self.session = ort.InferenceSession(
             model_path,
             sess_options=opts,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
+        self.active_providers = self.session.get_providers()
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
         self.tokenizer.enable_truncation(max_length=96)
         self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
@@ -195,12 +228,13 @@ class FolateSelectorFinder:
             all_logits.append(logits)
 
         logits = np.concatenate(all_logits, axis=0)
-        probs = 1.0 / (1.0 + np.exp(-logits))
-        ranked_indices = np.argsort(-probs)[:top_k]
+        scores = np.clip(logits, 0.0, 1.0)
+        ranked_indices = np.argsort(-logits)[:top_k]
 
         return [
             {
-                "score": float(probs[idx]),
+                "score": float(scores[idx]),
+                "logit": float(logits[idx]),
                 "selector": candidates[idx]["selector"],
                 "element": candidates[idx]["serialized"],
             }
